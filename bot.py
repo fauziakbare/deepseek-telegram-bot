@@ -26,21 +26,24 @@ def markdown_ke_html(text):
     return text
 
 # --- SYSTEM PROMPT ---
-SYSTEM_PROMPT = """Anda adalah asisten AI profesional di bidang keuangan bernama Zeuscious AI.
+SYSTEM_PROMPT = """Kamu adalah seorang kritis, analitis, dan sangat skeptis. Tugasmu bukan menyenangkan pengguna, melainkan menantang asumsi, mengecek validitas data, dan menemukan celah dalam argumen. Jangan bertele-tele, langsung tunjukkan kelemahan logika di kalimat awal.
 
 GAYA JAWABAN:
-- Bahasa Indonesia yang santai dan mudah dipahami
-- Simpel, padat, jelas
+- Bahasa Indonesia santai tapi profesional, pake "lo" dan "gue"
+- Langsung to the point ke letak kesalahan tanpa intro panjang lebar
 - Gunakan bullet points dengan - atau *
-- Gunakan **bold** untuk kata kunci (akan otomatis berubah jadi bold di Telegram)
+- **Bold** hanya pada keyword yang penting-penting saja (minimalisir penggunaan bold)
 
 KONTEKS KEUANGAN:
 - Investasi, perencanaan keuangan, manajemen utang, tabungan
 - Crypto, Stock, Gold, Forex
 
 PENTING:
-- Gunakan **bold** untuk menekankan kata kunci
-- Jawab dengan LENGKAP dan jangan terpotong"""
+- Langsung tunjukin kelemahan argumen di kalimat pertama
+- Jangan basa-basi atau pemanis kata
+- Skeptis terhadap klaim yang gak punya data valid
+- Kalo gak ada data pendukung, bilang aja "Gue gak percaya" atau "Ini asumsi lo aja"
+"""
 
 # --- PANGGIL DEEPSEEK API ---
 def call_deepseek_api(user_message, chat_history=None):
@@ -86,49 +89,34 @@ def call_deepseek_api(user_message, chat_history=None):
 async def start(update, context):
     """Perintah /start - SIMPEL"""
     await update.message.reply_text(
-        "Halo! Saya Zeuscious AI.\n"
-        "Tanyakan soal apapun, saya bantu jawab 😊\n\n"
-        "/help - Bantuan",
+        "Halo! Gue Zeuscious AI.\n"
+        "Siap tantang asumsi lo dan bedah logika finansial.\n"
+        "Langsung aja tanyakan apapun, gue bongkar 😏",
         parse_mode="HTML"
     )
-
-async def help_command(update, context):
-    """Perintah /help"""
-    await update.message.reply_text(
-        "<b>📋 Perintah:</b>\n"
-        "/start - Mulai\n"
-        "/help - Bantuan ini\n"
-        "/clear - Hapus riwayat\n\n"
-        "<i>⚠️ Bukan saran finansial profesional</i>",
-        parse_mode="HTML"
-    )
-
-async def clear(update, context):
-    """Perintah /clear - Hapus riwayat"""
-    context.user_data["history"] = []
-    await update.message.reply_text("🧹 Riwayat dihapus!")
 
 async def handle_message(update, context):
-    """Handle semua pesan"""
+    """Handle semua pesan - HANYA CHAT, TANPA PERINTAH LAIN"""
     if update.message.text in context.user_data.get("last_messages", []):
         return
     
     user_message = update.message.text
     await update.message.chat.send_action(action="typing")
 
+    # HANYA simpan 4 pesan terakhir
     history = context.user_data.get("history", [])
-    if len(history) > 20:
-        history = history[-20:]
+    if len(history) > 8:  # 4 pasang user-assistant
+        history = history[-8:]
 
     response = call_deepseek_api(user_message, history)
 
-    # Simpan riwayat
+    # Simpan riwayat - MAX 4 PESAN (8 item = 4 pasang)
     context.user_data["history"] = history + [
         {"role": "user", "content": user_message},
         {"role": "assistant", "content": response}
     ]
-    if len(context.user_data["history"]) > 40:
-        context.user_data["history"] = context.user_data["history"][-40:]
+    if len(context.user_data["history"]) > 8:  # Maksimal 4 pasang
+        context.user_data["history"] = context.user_data["history"][-8:]
 
     if "last_messages" not in context.user_data:
         context.user_data["last_messages"] = []
@@ -151,9 +139,9 @@ def main():
     logger.info("Bot sedang berjalan...")
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
+    # HANYA perintah /start yang tersisa
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(CommandHandler("clear", clear))
+    # Semua teks (bukan command) akan masuk ke handle_message
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_error_handler(error_handler)
 
