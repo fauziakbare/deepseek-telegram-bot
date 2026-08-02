@@ -147,7 +147,7 @@ async def handle_photo(update, context):
         prompt_kritis = f"{SYSTEM_PROMPT}\n\nPesan dari Pengguna: {caption}"
 
         response = gemini_client.models.generate_content(
-            model="gemini-2.5-flash",
+            model="gemini-3.5-flash-lite",
             contents=[image, prompt_kritis]
         )
 
