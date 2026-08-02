@@ -20,36 +20,42 @@ DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "YOUR_DEEPSEEK_API_KEY")
 DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 DEEPSEEK_MODEL = "deepseek-v4-flash"
 
-# --- Fungsi untuk Membersihkan Format (VERSI TERBARU & LEBIH AGRESIF) ---
+# --- Fungsi untuk Membersihkan Format (VERSI PALING AGRESIF) ---
 def clean_markdown_to_html(text: str) -> str:
     """
-    Mengubah format **markdown** menjadi <b>HTML</b> secara agresif
+    Mengubah semua format **markdown** menjadi <b>HTML</b> 
+    VERSI PALING AGRESIF - menghapus semua **
     """
-    # 1. Hapus heading (###, ##, #)
-    text = re.sub(r'^#{1,3}\s+', '', text, flags=re.MULTILINE)
+    # LANGKAH 1: Ubah **teks** menjadi <b>teks</b>
+    # Gunakan loop untuk memastikan semua ** tertangkap
+    max_iterations = 10
+    for _ in range(max_iterations):
+        # Cari pola **...** dan ubah ke <b>...</b>
+        new_text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
+        if new_text == text:
+            break
+        text = new_text
     
-    # 2. Ubah **teks** menjadi <b>teks</b> (termasuk yang ada di tengah kalimat)
-    text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
-    
-    # 3. Ubah *teks* menjadi <i>teks</i> (italic)
-    text = re.sub(r'\*(.+?)\*', r'<i>\1</i>', text)
-    
-    # 4. Ubah __teks__ menjadi <u>teks</u> (underline)
-    text = re.sub(r'__(.+?)__', r'<u>\1</u>', text)
-    
-    # 5. Hapus sisa ** yang tidak berpasangan
+    # LANGKAH 2: Hapus semua ** yang tersisa (tidak berpasangan)
     text = text.replace('**', '')
     
-    # 6. Hapus sisa * yang tidak berpasangan
+    # LANGKAH 3: Hapus semua * yang tersisa (tidak berpasangan)
+    # Tapi hati-hati jangan hapus * yang merupakan bagian dari emoji atau bullet
     text = re.sub(r'^\*\s+', '• ', text, flags=re.MULTILINE)
     text = re.sub(r'\*\s+', '• ', text)
+    text = re.sub(r'\*$', '', text, flags=re.MULTILINE)  # Hapus * di akhir baris
     
-    # 7. Hapus karakter aneh lain
+    # LANGKAH 4: Hapus heading
+    text = re.sub(r'^#{1,3}\s+', '', text, flags=re.MULTILINE)
+    
+    # LANGKAH 5: Hapus karakter aneh
     text = text.replace('```', '')
+    text = text.replace('___', '')
+    text = text.replace('---', '───────────')
     
     return text
 
-# --- System Prompt ---
+# --- System Prompt (DIPERBAIKI) ---
 SYSTEM_PROMPT = """Anda adalah asisten AI profesional di bidang keuangan yang bernama Zeuscious AI.
 
 PERSONALITY & PERILAKU:
@@ -62,9 +68,9 @@ GAYA JAWABAN:
 - Hindari jargon teknis yang rumit
 - Berikan contoh konkret jika memungkinkan
 - Jawaban singkat namun informatif
-- Gunakan **bold** untuk menekankan kata kunci
+- Gunakan tanda * atau - untuk bullet points
+- JANGAN gunakan ** untuk bold (karena akan dihapus)
 - Gunakan emoji yang relevan (💰📊📈💼)
-- Jawaban harus LENGKAP dan tidak terpotong
 
 KONTEKS KEUANGAN:
 - Investasi (saham, reksa dana, obligasi, crypto, emas, properti)
@@ -78,7 +84,8 @@ KONTEKS KEUANGAN:
 
 PENTING:
 - Selalu gunakan bahasa Indonesia dalam setiap respons
-- Gunakan **bold** untuk menekankan kata kunci
+- JANGAN gunakan **bold** sama sekali
+- Gunakan bullet points dengan - atau *
 - Jika pertanyaan di luar keuangan, tetap jawab dengan sopan
 - Berikan disclaimer jika diperlukan
 - Jawab dengan LENGKAP dan jangan terpotong"""
@@ -131,10 +138,13 @@ def call_deepseek_api(user_message: str, chat_history: list = None) -> str:
         
         content = result["choices"][0]["message"]["content"]
         
-        # 🔥 BERSIHKAN OUTPUT: Ubah ** ke <b>
+        # 🔥 BERSIHKAN OUTPUT: Hapus semua **
+        original_length = len(content)
         content = clean_markdown_to_html(content)
+        logger.info(f"Cleaned: {original_length} -> {len(content)} characters")
         
-        logger.info(f"Response cleaned, length: {len(content)} characters")
+        # 🔥 LOG UNTUK DEBUG: Tampilkan 200 karakter pertama
+        logger.info(f"Preview: {content[:200]}...")
         
         return content
         
@@ -208,7 +218,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         response = call_deepseek_api(user_message, history)
-        logger.info(f"Response length: {len(response)} characters")
+        logger.info(f"Final response length: {len(response)} characters")
     except Exception as e:
         logger.error(f"Error in handle_message: {e}")
         response = f"❌ Terjadi kesalahan: {str(e)}"
