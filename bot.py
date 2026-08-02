@@ -25,22 +25,25 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
 DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 DEEPSEEK_MODEL = "deepseek-v4-flash"
+GEMINI_MODEL = "gemini-3.5-flash-lite"
 
 gemini_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
 # --- PARSER MARKDOWN TO HTML ---
 def markdown_ke_html(text):
+    if not text:
+        return ""
     text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
     text = text.replace('**', '')
     text = re.sub(r'^#{1,3}\s+', '', text, flags=re.MULTILINE)
     return text
 
-# --- SYSTEM PROMPT (DENGAN STRUKTUR HIBRIDA) ---
+# --- SYSTEM PROMPT (DENGAN SIMBOL BULLET •) ---
 SYSTEM_PROMPT = """Kamu adalah seorang kritis, analitis, dan sangat skeptis. Tugasmu bukan menyenangkan pengguna, melainkan menantang asumsi, mengecek validitas data, dan menemukan celah dalam argumen. 
 
 STRUKTUR JAWABAN (WAJIB FORMAT HIBRIDA):
 1. Kalimat Pertama (Vonis Utama): Langsung hantam dengan kesimpulan paling tajam atau kelemahan logika terbesar di baris paling atas. DILARANG menggunakan kata pembuka/basa-basi seperti "Halo", "Berikut analisisnya", atau "Berdasarkan gambar".
-2. Poin Pembuktian (Bullet Points): Gunakan `-` atau `*` untuk membeberkan 2-4 bukti fakta, angka, rasio, atau cacat logika secara ringkas dan spesifik.
+2. Poin Pembuktian (Bullet Points): Gunakan simbol bullet `•` di awal setiap poin untuk membeberkan 2-4 bukti fakta, angka, rasio, atau cacat logika secara ringkas dan spesifik.
 3. Kalimat Penutup (Tantangan): Akhiri dengan 1 kalimat singkat yang menantang pemikiran pengguna atau menagih data pendukung.
 
 GAYA BAHASA:
@@ -87,6 +90,10 @@ def call_deepseek_api(user_message, chat_history=None):
         response.raise_for_status()
         result = response.json()
         content = result["choices"][0]["message"]["content"]
+        
+        if not content:
+            return "❌ API DeepSeek mengembalikan respon kosong."
+            
         return markdown_ke_html(content)
     except Exception as e:
         logger.error(f"Error DeepSeek API: {e}")
@@ -136,13 +143,11 @@ async def handle_photo(update, context):
     photo_file_id = update.message.photo[-1].file_id
     caption = update.message.caption or "Analisis dan kritisi gambar ini secara detail."
 
-    # Simpan sementara ID foto dan caption di memori sesi user
     context.user_data["pending_photo"] = {
         "file_id": photo_file_id,
         "caption": caption
     }
 
-    # Buat tombol pilihan
     keyboard = [
         [
             InlineKeyboardButton("⚡ Direct Gemini (Cepat)", callback_data="process_gemini"),
@@ -169,43 +174,54 @@ async def handle_button_click(update, context):
     await query.edit_message_text("⏳ Memproses gambar...")
 
     try:
-        # Unduh file gambar berdasarkan file_id yang disimpan
         file_info = await context.bot.get_file(pending_photo["file_id"])
         photo_bytes = await file_info.download_as_bytearray()
         image = Image.open(io.BytesIO(photo_bytes))
         caption = pending_photo["caption"]
 
+        final_text = ""
+
         # --- PILIHAN 1: DIRECT GEMINI ---
         if query.data == "process_gemini":
             prompt = f"{SYSTEM_PROMPT}\n\nInstruksi Pengguna: {caption}"
             response = gemini_client.models.generate_content(
-                model="gemini-3.5-flash-lite",
+                model=GEMINI_MODEL,
                 contents=[image, prompt]
             )
-            final_text = markdown_ke_html(response.text)
+            raw_text = response.text if response and response.text else ""
+            
+            if not raw_text.strip():
+                final_text = "❌ Gemini mengembalikan respon kosong."
+            else:
+                final_text = markdown_ke_html(raw_text) + f"\n\n<i>⚡ Processed by Direct Gemini ({GEMINI_MODEL})</i>"
 
         # --- PILIHAN 2: HYBRID (GEMINI OCR -> DEEPSEEK REASONING) ---
         elif query.data == "process_hybrid":
-            # Step A: OCR via Gemini
             ocr_prompt = "Ekstrak seluruh teks, angka, tabel, dan komponen visual penting dari gambar ini secara objektif dan detail tanpa analisis."
-            ocr_result = gemini_client.models.generate_content(
-                model="gemini-3.5-flash-lite",
+            gemini_ocr = gemini_client.models.generate_content(
+                model=GEMINI_MODEL,
                 contents=[image, ocr_prompt]
-            ).text
+            )
+            ocr_result = gemini_ocr.text if gemini_ocr and gemini_ocr.text else ""
 
-            # Step B: Oper hasil OCR ke DeepSeek bersama History
-            deepseek_input = f"[DATA DARI SCAN GAMBAR]:\n{ocr_result}\n\n[INSTRUKSI/PERTANYAAN USER]: {caption}"
-            history = context.user_data.get("history", [])
-            
-            final_text = call_deepseek_api(deepseek_input, history)
+            if not ocr_result.strip():
+                final_text = "❌ Gemini gagal membaca/mengekstrak teks dari gambar ini."
+            else:
+                deepseek_input = f"[DATA DARI SCAN GAMBAR]:\n{ocr_result}\n\n[INSTRUKSI/PERTANYAAN USER]: {caption}"
+                history = context.user_data.get("history", [])
+                deepseek_res = call_deepseek_api(deepseek_input, history)
+                final_text = deepseek_res + f"\n\n<i>🧠 Processed by DeepSeek ({DEEPSEEK_MODEL}) via Gemini OCR</i>"
 
-        # Kirim hasil analisis
+        # Validasi jika final_text tetap kosong
+        if not final_text or not final_text.strip():
+            final_text = "❌ Gagal menghasilkan respon (teks kosong)."
+
+        # Kirim hasil ke Telegram
         try:
             await query.message.reply_text(final_text, parse_mode="HTML")
         except Exception:
             await query.message.reply_text(final_text)
 
-        # Hapus data foto sementara
         context.user_data.pop("pending_photo", None)
 
     except Exception as e:
