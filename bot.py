@@ -36,7 +36,7 @@ GAYA JAWABAN:
 
 KONTEKS KEUANGAN:
 - Investasi, perencanaan keuangan, manajemen utang, tabungan
-- Manajemen keuangan lanjutan, persiapan ujian CA
+- Crypto, Stock, Gold, Forex
 
 PENTING:
 - Gunakan **bold** untuk menekankan kata kunci
