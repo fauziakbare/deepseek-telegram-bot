@@ -2,30 +2,35 @@ import os
 import requests
 import logging
 import re
+import io
+from PIL import Image
+from google import genai
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# --- CONFIGURATION & ENV VARIABLES ---
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
 DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 DEEPSEEK_MODEL = "deepseek-v4-flash"
 
-# --- FUNGSI MENGUBAH ** ke <b> ---
+# Inisialisasi Client Gemini
+gemini_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
+
+# --- PARSER MARKDOWN TO HTML TELEGRAM ---
 def markdown_ke_html(text):
     """Ubah **teks** menjadi <b>teks</b> untuk Telegram"""
-    # Ubah **teks** menjadi <b>teks</b>
     text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
-    # Hapus sisa ** yang tidak berpasangan
     text = text.replace('**', '')
-    # Hapus heading
     text = re.sub(r'^#{1,3}\s+', '', text, flags=re.MULTILINE)
     return text
 
-# --- SYSTEM PROMPT ---
+# --- SYSTEM PROMPT DEEPSEEK ---
 SYSTEM_PROMPT = """Kamu adalah seorang kritis, analitis, dan sangat skeptis. Tugasmu bukan menyenangkan pengguna, melainkan menantang asumsi, mengecek validitas data, dan menemukan celah dalam argumen. Jangan bertele-tele, langsung tunjukkan kelemahan logika di kalimat awal.
 
 GAYA JAWABAN:
@@ -45,7 +50,7 @@ PENTING:
 - Kalo gak ada data pendukung, bilang aja "Gue gak percaya" atau "Ini asumsi lo aja"
 """
 
-# --- PANGGIL DEEPSEEK API ---
+# --- DEEPSEEK API CALL ---
 def call_deepseek_api(user_message, chat_history=None):
     headers = {
         "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
@@ -75,47 +80,40 @@ def call_deepseek_api(user_message, chat_history=None):
         response.raise_for_status()
         result = response.json()
         content = result["choices"][0]["message"]["content"]
-        
-        # Ubah ** ke <b>
-        content = markdown_ke_html(content)
-        
-        return content
+        return markdown_ke_html(content)
     except Exception as e:
-        logger.error(f"Error: {e}")
-        return f"❌ Terjadi kesalahan: {str(e)}"
+        logger.error(f"Error DeepSeek API: {e}")
+        return f"❌ Terjadi kesalahan DeepSeek: {str(e)}"
 
-# --- HANDLER TELEGRAM ---
+# --- TELEGRAM HANDLERS ---
 
 async def start(update, context):
-    """Perintah /start - SIMPEL"""
     await update.message.reply_text(
         "Halo! Gue Zeuscious AI.\n"
-        "Siap tantang asumsi lo dan bedah logika finansial.\n"
-        "Langsung aja tanyakan apapun, gue bongkar 😏",
+        "Siap tantang asumsi lo, bedah logika finansial, dan baca gambar/chart lo.\n"
+        "Kirim teks atau foto, langsung gue bongkar 😏",
         parse_mode="HTML"
     )
 
 async def handle_message(update, context):
-    """Handle semua pesan - HANYA CHAT, TANPA PERINTAH LAIN"""
+    """Handle percakapan teks biasa via DeepSeek"""
     if update.message.text in context.user_data.get("last_messages", []):
         return
     
     user_message = update.message.text
     await update.message.chat.send_action(action="typing")
 
-    # HANYA simpan 4 pesan terakhir
     history = context.user_data.get("history", [])
-    if len(history) > 8:  # 4 pasang user-assistant
+    if len(history) > 8:
         history = history[-8:]
 
     response = call_deepseek_api(user_message, history)
 
-    # Simpan riwayat - MAX 4 PESAN (8 item = 4 pasang)
     context.user_data["history"] = history + [
         {"role": "user", "content": user_message},
         {"role": "assistant", "content": response}
     ]
-    if len(context.user_data["history"]) > 8:  # Maksimal 4 pasang
+    if len(context.user_data["history"]) > 8:
         context.user_data["history"] = context.user_data["history"][-8:]
 
     if "last_messages" not in context.user_data:
@@ -124,25 +122,57 @@ async def handle_message(update, context):
     if len(context.user_data["last_messages"]) > 5:
         context.user_data["last_messages"] = context.user_data["last_messages"][-5:]
 
-    # Kirim dengan HTML
     try:
         await update.message.reply_text(response, parse_mode="HTML")
     except Exception:
-        # Kalau error HTML, kirim polos
         await update.message.reply_text(response)
+
+async def handle_photo(update, context):
+    """Mode Direct Gemini: Mengirim gambar langsung ke Gemini 2.5 Flash"""
+    if not gemini_client:
+        await update.message.reply_text("❌ GEMINI_API_KEY belum terpasang di Environment Variables Railway.")
+        return
+
+    await update.message.chat.send_action(action="typing")
+
+    caption = update.message.caption or "Analisis dan kritisi isi dari gambar ini secara objektif dan detail."
+
+    try:
+        # Download gambar dari Telegram ke dalam memory buffer (RAM)
+        photo_file = await update.message.photo[-1].get_file()
+        photo_bytes = await photo_file.download_as_bytearray()
+        image = Image.open(io.BytesIO(photo_bytes))
+
+        # Panggil API Gemini 2.5 Flash dengan menyuntikkan SYSTEM_PROMPT
+        prompt_kritis = f"{SYSTEM_PROMPT}\n\nPesan dari Pengguna: {caption}"
+
+        response = gemini_client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=[image, prompt_kritis]
+        )
+
+        formatted_response = markdown_ke_html(response.text)
+        
+        try:
+            await update.message.reply_text(formatted_response, parse_mode="HTML")
+        except Exception:
+            await update.message.reply_text(response.text)
+
+    except Exception as e:
+        logger.error(f"Error pada Gemini Vision: {e}")
+        await update.message.reply_text(f"❌ Gagal memproses gambar via Gemini: {str(e)}")
 
 async def error_handler(update, context):
     logger.error(f"Error: {context.error}")
 
-# --- MAIN ---
+# --- MAIN RUNNER ---
 def main():
     logger.info("Bot sedang berjalan...")
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
-    # HANYA perintah /start yang tersisa
     app.add_handler(CommandHandler("start", start))
-    # Semua teks (bukan command) akan masuk ke handle_message
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_error_handler(error_handler)
 
     app.run_polling()
