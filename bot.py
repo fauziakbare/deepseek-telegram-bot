@@ -20,41 +20,32 @@ DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "YOUR_DEEPSEEK_API_KEY")
 DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 DEEPSEEK_MODEL = "deepseek-v4-flash"
 
-# --- Fungsi untuk Membersihkan Format ---
+# --- Fungsi untuk Membersihkan Format (VERSI TERBARU & LEBIH AGRESIF) ---
 def clean_markdown_to_html(text: str) -> str:
     """
-    Mengubah format **markdown** menjadi <b>HTML</b> dan membersihkan
-    format lain agar kompatibel dengan Telegram HTML parse_mode
+    Mengubah format **markdown** menjadi <b>HTML</b> secara agresif
     """
-    # 1. Hapus ### heading (ubah menjadi bold)
-    text = re.sub(r'^###\s+', '', text, flags=re.MULTILINE)
-    text = re.sub(r'^##\s+', '', text, flags=re.MULTILINE)
-    text = re.sub(r'^#\s+', '', text, flags=re.MULTILINE)
+    # 1. Hapus heading (###, ##, #)
+    text = re.sub(r'^#{1,3}\s+', '', text, flags=re.MULTILINE)
     
-    # 2. Ubah **teks** menjadi <b>teks</b> (BOLD)
-    def replace_bold(match):
-        return f"<b>{match.group(1)}</b>"
-    text = re.sub(r'\*\*(.+?)\*\*', replace_bold, text)
+    # 2. Ubah **teks** menjadi <b>teks</b> (termasuk yang ada di tengah kalimat)
+    text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
     
-    # 3. Ubah *teks* menjadi <i>teks</i> (ITALIC)
-    def replace_italic(match):
-        return f"<i>{match.group(1)}</i>"
-    text = re.sub(r'\*(.+?)\*', replace_italic, text)
+    # 3. Ubah *teks* menjadi <i>teks</i> (italic)
+    text = re.sub(r'\*(.+?)\*', r'<i>\1</i>', text)
     
-    # 4. Ubah `teks` menjadi <code>teks</code> (CODE)
-    def replace_code(match):
-        return f"<code>{match.group(1)}</code>"
-    text = re.sub(r'`(.+?)`', replace_code, text)
+    # 4. Ubah __teks__ menjadi <u>teks</u> (underline)
+    text = re.sub(r'__(.+?)__', r'<u>\1</u>', text)
     
-    # 5. Ubah --- menjadi garis pemisah
-    text = re.sub(r'^---+$', '───────────', text, flags=re.MULTILINE)
-    
-    # 6. Hapus karakter ** yang tersisa
+    # 5. Hapus sisa ** yang tidak berpasangan
     text = text.replace('**', '')
     
-    # 7. Hapus karakter * yang tersisa (tapi hati-hati jangan hapus emoji)
+    # 6. Hapus sisa * yang tidak berpasangan
+    text = re.sub(r'^\*\s+', '• ', text, flags=re.MULTILINE)
     text = re.sub(r'\*\s+', '• ', text)
-    text = re.sub(r'\* ', '• ', text)
+    
+    # 7. Hapus karakter aneh lain
+    text = text.replace('```', '')
     
     return text
 
@@ -71,7 +62,7 @@ GAYA JAWABAN:
 - Hindari jargon teknis yang rumit
 - Berikan contoh konkret jika memungkinkan
 - Jawaban singkat namun informatif
-- Gunakan **bold** untuk menekankan kata kunci (akan otomatis diubah ke HTML)
+- Gunakan **bold** untuk menekankan kata kunci
 - Gunakan emoji yang relevan (💰📊📈💼)
 - Jawaban harus LENGKAP dan tidak terpotong
 
