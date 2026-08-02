@@ -20,74 +20,45 @@ DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "YOUR_DEEPSEEK_API_KEY")
 DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 DEEPSEEK_MODEL = "deepseek-v4-flash"
 
-# --- Fungsi untuk Membersihkan Format (VERSI PALING AGRESIF) ---
-def clean_markdown_to_html(text: str) -> str:
+# --- Fungsi untuk MENGHAPUS semua ** (BUKAN mengubah ke HTML) ---
+def clean_markdown(text: str) -> str:
     """
-    Mengubah semua format **markdown** menjadi <b>HTML</b> 
-    VERSI PALING AGRESIF - menghapus semua **
+    Menghapus SEMUA ** dari teks (paling aman)
     """
-    # LANGKAH 1: Ubah **teks** menjadi <b>teks</b>
-    # Gunakan loop untuk memastikan semua ** tertangkap
-    max_iterations = 10
-    for _ in range(max_iterations):
-        # Cari pola **...** dan ubah ke <b>...</b>
-        new_text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
-        if new_text == text:
-            break
-        text = new_text
-    
-    # LANGKAH 2: Hapus semua ** yang tersisa (tidak berpasangan)
+    # Hapus semua **
     text = text.replace('**', '')
     
-    # LANGKAH 3: Hapus semua * yang tersisa (tidak berpasangan)
-    # Tapi hati-hati jangan hapus * yang merupakan bagian dari emoji atau bullet
+    # Hapus semua * yang tidak berpasangan (tapi hati-hati)
+    # Ubah * di awal baris menjadi bullet point
     text = re.sub(r'^\*\s+', '• ', text, flags=re.MULTILINE)
     text = re.sub(r'\*\s+', '• ', text)
-    text = re.sub(r'\*$', '', text, flags=re.MULTILINE)  # Hapus * di akhir baris
     
-    # LANGKAH 4: Hapus heading
+    # Hapus heading
     text = re.sub(r'^#{1,3}\s+', '', text, flags=re.MULTILINE)
     
-    # LANGKAH 5: Hapus karakter aneh
+    # Hapus karakter aneh
     text = text.replace('```', '')
     text = text.replace('___', '')
-    text = text.replace('---', '───────────')
     
     return text
 
-# --- System Prompt (DIPERBAIKI) ---
+# --- System Prompt (SEDERHANA) ---
 SYSTEM_PROMPT = """Anda adalah asisten AI profesional di bidang keuangan yang bernama Zeuscious AI.
 
-PERSONALITY & PERILAKU:
-- Berperilaku sebagai profesional keuangan yang berpengalaman
-- Gunakan bahasa Indonesia yang santai dan mudah dipahami
-- Bersikap ramah, membantu, dan tidak menggurui
-
 GAYA JAWABAN:
-- Simpel, padat, dan jelas
-- Hindari jargon teknis yang rumit
-- Berikan contoh konkret jika memungkinkan
-- Jawaban singkat namun informatif
-- Gunakan tanda * atau - untuk bullet points
-- JANGAN gunakan ** untuk bold (karena akan dihapus)
+- Gunakan bahasa Indonesia yang santai dan mudah dipahami
+- Jawaban simpel, padat, dan jelas
+- Gunakan bullet points dengan tanda - atau * (tanpa **)
+- JANGAN gunakan **bold** sama sekali
 - Gunakan emoji yang relevan (💰📊📈💼)
 
 KONTEKS KEUANGAN:
-- Investasi (saham, reksa dana, obligasi, crypto, emas, properti)
-- Perencanaan keuangan pribadi
-- Manajemen utang dan kredit
-- Tabungan dan dana darurat
-- Perpajakan dasar
-- Ekonomi makro dan mikro
-- Manajemen keuangan lanjutan
-- Persiapan ujian CA (Chartered Accountant)
+- Investasi, perencanaan keuangan, manajemen utang, tabungan
+- Manajemen keuangan lanjutan, persiapan ujian CA
 
 PENTING:
-- Selalu gunakan bahasa Indonesia dalam setiap respons
-- JANGAN gunakan **bold** sama sekali
-- Gunakan bullet points dengan - atau *
-- Jika pertanyaan di luar keuangan, tetap jawab dengan sopan
-- Berikan disclaimer jika diperlukan
+- JANGAN gunakan ** dalam jawaban apapun
+- Gunakan - atau * untuk bullet points
 - Jawab dengan LENGKAP dan jangan terpotong"""
 
 # --- Fungsi Panggil DeepSeek API ---
@@ -138,13 +109,10 @@ def call_deepseek_api(user_message: str, chat_history: list = None) -> str:
         
         content = result["choices"][0]["message"]["content"]
         
-        # 🔥 BERSIHKAN OUTPUT: Hapus semua **
+        # 🔥 BERSIHKAN: Hapus semua **
         original_length = len(content)
-        content = clean_markdown_to_html(content)
+        content = clean_markdown(content)
         logger.info(f"Cleaned: {original_length} -> {len(content)} characters")
-        
-        # 🔥 LOG UNTUK DEBUG: Tampilkan 200 karakter pertama
-        logger.info(f"Preview: {content[:200]}...")
         
         return content
         
@@ -165,7 +133,7 @@ def call_deepseek_api(user_message: str, chat_history: list = None) -> str:
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     welcome_text = """
-<b>💼 Halo! Saya Zeuscious AI - Asisten Keuangan Anda.</b>
+💼 Halo! Saya Zeuscious AI - Asisten Keuangan Anda.
 
 Saya siap membantu Anda dengan:
 💰 Investasi (saham, reksa dana, crypto, emas)
@@ -175,29 +143,28 @@ Saya siap membantu Anda dengan:
 📚 Manajemen keuangan lanjutan
 🎓 Persiapan ujian CA (Chartered Accountant)
 
-Cukup tanyakan apapun tentang keuangan, dan saya akan jawab dengan simpel & jelas!
+Cukup tanyakan apapun tentang keuangan!
 
-📌 <b>Perintah:</b> /help untuk bantuan
+📌 Perintah: /help untuk bantuan
 """
-    await update.message.reply_text(welcome_text, parse_mode="HTML")
+    await update.message.reply_text(welcome_text)
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     help_text = """
-<b>📋 Perintah yang tersedia:</b>
+📋 Perintah yang tersedia:
 /start - Mulai bot
 /help - Tampilkan bantuan ini
 /clear - Hapus riwayat percakapan
 
-<b>💡 Contoh pertanyaan:</b>
+💡 Contoh pertanyaan:
 - Bagaimana cara mulai investasi saham?
 - Apa itu reksa dana?
 - Bagaimana mengatur keuangan gaji 5 juta?
-- Apa itu penciptaan nilai dalam manajemen keuangan?
 - Bagaimana persiapan ujian CA?
 
-<i>⚠️ Disclaimer: Ini bukan saran finansial profesional.</i>
+⚠️ Disclaimer: Ini bukan saran finansial profesional.
 """
-    await update.message.reply_text(help_text, parse_mode="HTML")
+    await update.message.reply_text(help_text)
 
 async def clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["history"] = []
@@ -236,13 +203,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(context.user_data["last_messages"]) > 5:
         context.user_data["last_messages"] = context.user_data["last_messages"][-5:]
 
-    # Kirim dengan parse_mode HTML
-    try:
-        await update.message.reply_text(response, parse_mode="HTML")
-    except Exception as e:
-        # Jika HTML error, kirim tanpa parse_mode
-        logger.error(f"HTML parse error: {e}")
-        await update.message.reply_text(response)
+    # 🔥 KIRIM TANPA parse_mode (biarin aja apa adanya)
+    await update.message.reply_text(response)
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.error(f"Update {update} caused error {context.error}")
