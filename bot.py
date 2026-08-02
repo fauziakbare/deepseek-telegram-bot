@@ -5,8 +5,15 @@ import re
 import io
 from PIL import Image
 from google import genai
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    ApplicationBuilder, 
+    CommandHandler, 
+    MessageHandler, 
+    CallbackQueryHandler, 
+    filters, 
+    ContextTypes
+)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -19,35 +26,35 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 DEEPSEEK_MODEL = "deepseek-v4-flash"
 
-# Inisialisasi Client Gemini
 gemini_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
-# --- PARSER MARKDOWN TO HTML TELEGRAM ---
+# --- PARSER MARKDOWN TO HTML ---
 def markdown_ke_html(text):
-    """Ubah **teks** menjadi <b>teks</b> untuk Telegram"""
     text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
     text = text.replace('**', '')
     text = re.sub(r'^#{1,3}\s+', '', text, flags=re.MULTILINE)
     return text
 
-# --- SYSTEM PROMPT DEEPSEEK ---
-SYSTEM_PROMPT = """Kamu adalah seorang kritis, analitis, dan sangat skeptis. Tugasmu bukan menyenangkan pengguna, melainkan menantang asumsi, mengecek validitas data, dan menemukan celah dalam argumen. Jangan bertele-tele, langsung tunjukkan kelemahan logika di kalimat awal.
+# --- SYSTEM PROMPT (DENGAN STRUKTUR HIBRIDA) ---
+SYSTEM_PROMPT = """Kamu adalah seorang kritis, analitis, dan sangat skeptis. Tugasmu bukan menyenangkan pengguna, melainkan menantang asumsi, mengecek validitas data, dan menemukan celah dalam argumen. 
 
-GAYA JAWABAN:
-- Bahasa Indonesia santai tapi profesional, pake "lo" dan "gue"
-- Langsung to the point ke letak kesalahan tanpa intro panjang lebar
-- Gunakan bullet points dengan - atau *
-- **Bold** hanya pada keyword yang penting-penting saja (minimalisir penggunaan bold)
+STRUKTUR JAWABAN (WAJIB FORMAT HIBRIDA):
+1. Kalimat Pertama (Vonis Utama): Langsung hantam dengan kesimpulan paling tajam atau kelemahan logika terbesar di baris paling atas. DILARANG menggunakan kata pembuka/basa-basi seperti "Halo", "Berikut analisisnya", atau "Berdasarkan gambar".
+2. Poin Pembuktian (Bullet Points): Gunakan `-` atau `*` untuk membeberkan 2-4 bukti fakta, angka, rasio, atau cacat logika secara ringkas dan spesifik.
+3. Kalimat Penutup (Tantangan): Akhiri dengan 1 kalimat singkat yang menantang pemikiran pengguna atau menagih data pendukung.
 
-KONTEKS KEUANGAN:
-- Investasi, perencanaan keuangan, manajemen utang, tabungan
-- Crypto, Stock, Gold, Forex
+GAYA BAHASA:
+- Bahasa Indonesia santai tapi profesional, gunakan "lo" dan "gue".
+- Langsung to the point ke letak kesalahan.
+- **Bold** hanya pada keyword/angka yang penting saja (minimalisir bold).
+
+KONTEKS KEUANGAN & BISNIS:
+- Investasi, perencanaan keuangan, manajemen utang, tabungan.
+- Crypto, Stock, Gold, Forex, Laporan Keuangan, Chart.
 
 PENTING:
-- Langsung tunjukin kelemahan argumen di kalimat pertama
-- Jangan basa-basi atau pemanis kata
-- Skeptis terhadap klaim yang gak punya data valid
-- Kalo gak ada data pendukung, bilang aja "Gue gak percaya" atau "Ini asumsi lo aja"
+- Skeptis terhadap klaim yang tidak punya data valid.
+- Jika tidak ada data pendukung, katakan "Gue gak percaya" atau "Ini asumsi lo aja".
 """
 
 # --- DEEPSEEK API CALL ---
@@ -90,13 +97,12 @@ def call_deepseek_api(user_message, chat_history=None):
 async def start(update, context):
     await update.message.reply_text(
         "Halo! Gue Zeuscious AI.\n"
-        "Siap tantang asumsi lo, bedah logika finansial, dan baca gambar/chart lo.\n"
-        "Kirim teks atau foto, langsung gue bongkar 😏",
+        "Kirim teks atau foto, lalu pilih mau dibedah pakai Gemini atau DeepSeek 😏",
         parse_mode="HTML"
     )
 
 async def handle_message(update, context):
-    """Handle percakapan teks biasa via DeepSeek"""
+    """Handle chat teks murni via DeepSeek"""
     if update.message.text in context.user_data.get("last_messages", []):
         return
     
@@ -116,51 +122,95 @@ async def handle_message(update, context):
     if len(context.user_data["history"]) > 8:
         context.user_data["history"] = context.user_data["history"][-8:]
 
-    if "last_messages" not in context.user_data:
-        context.user_data["last_messages"] = []
-    context.user_data["last_messages"].append(update.message.text)
-    if len(context.user_data["last_messages"]) > 5:
-        context.user_data["last_messages"] = context.user_data["last_messages"][-5:]
-
     try:
         await update.message.reply_text(response, parse_mode="HTML")
     except Exception:
         await update.message.reply_text(response)
 
 async def handle_photo(update, context):
-    """Mode Direct Gemini: Mengirim gambar langsung ke Gemini 2.5 Flash"""
+    """Tampilkan tombol pilihan ketika pengguna mengirim foto"""
     if not gemini_client:
-        await update.message.reply_text("❌ GEMINI_API_KEY belum terpasang di Environment Variables Railway.")
+        await update.message.reply_text("❌ GEMINI_API_KEY belum terpasang.")
         return
 
-    await update.message.chat.send_action(action="typing")
+    photo_file_id = update.message.photo[-1].file_id
+    caption = update.message.caption or "Analisis dan kritisi gambar ini secara detail."
 
-    caption = update.message.caption or "Analisis dan kritisi isi dari gambar ini secara objektif dan detail."
+    # Simpan sementara ID foto dan caption di memori sesi user
+    context.user_data["pending_photo"] = {
+        "file_id": photo_file_id,
+        "caption": caption
+    }
+
+    # Buat tombol pilihan
+    keyboard = [
+        [
+            InlineKeyboardButton("⚡ Direct Gemini (Cepat)", callback_data="process_gemini"),
+            InlineKeyboardButton("🧠 Hybrid DeepSeek (Kritis)", callback_data="process_hybrid")
+        ]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    await update.message.reply_text(
+        "Gambar diterima. Pilih engine untuk memproses:",
+        reply_markup=reply_markup
+    )
+
+async def handle_button_click(update, context):
+    """Handler saat pengguna memencet salah satu tombol"""
+    query = update.callback_query
+    await query.answer()
+
+    pending_photo = context.user_data.get("pending_photo")
+    if not pending_photo:
+        await query.edit_message_text("❌ Data gambar sudah kadaluwarsa, silakan kirim ulang gambarnya.")
+        return
+
+    await query.edit_message_text("⏳ Memproses gambar...")
 
     try:
-        # Download gambar dari Telegram ke dalam memory buffer (RAM)
-        photo_file = await update.message.photo[-1].get_file()
-        photo_bytes = await photo_file.download_as_bytearray()
+        # Unduh file gambar berdasarkan file_id yang disimpan
+        file_info = await context.bot.get_file(pending_photo["file_id"])
+        photo_bytes = await file_info.download_as_bytearray()
         image = Image.open(io.BytesIO(photo_bytes))
+        caption = pending_photo["caption"]
 
-        # Panggil API Gemini 2.5 Flash dengan menyuntikkan SYSTEM_PROMPT
-        prompt_kritis = f"{SYSTEM_PROMPT}\n\nPesan dari Pengguna: {caption}"
+        # --- PILIHAN 1: DIRECT GEMINI ---
+        if query.data == "process_gemini":
+            prompt = f"{SYSTEM_PROMPT}\n\nInstruksi Pengguna: {caption}"
+            response = gemini_client.models.generate_content(
+                model="gemini-3.5-flash-lite",
+                contents=[image, prompt]
+            )
+            final_text = markdown_ke_html(response.text)
 
-        response = gemini_client.models.generate_content(
-            model="gemini-3.5-flash-lite",
-            contents=[image, prompt_kritis]
-        )
+        # --- PILIHAN 2: HYBRID (GEMINI OCR -> DEEPSEEK REASONING) ---
+        elif query.data == "process_hybrid":
+            # Step A: OCR via Gemini
+            ocr_prompt = "Ekstrak seluruh teks, angka, tabel, dan komponen visual penting dari gambar ini secara objektif dan detail tanpa analisis."
+            ocr_result = gemini_client.models.generate_content(
+                model="gemini-3.5-flash-lite",
+                contents=[image, ocr_prompt]
+            ).text
 
-        formatted_response = markdown_ke_html(response.text)
-        
+            # Step B: Oper hasil OCR ke DeepSeek bersama History
+            deepseek_input = f"[DATA DARI SCAN GAMBAR]:\n{ocr_result}\n\n[INSTRUKSI/PERTANYAAN USER]: {caption}"
+            history = context.user_data.get("history", [])
+            
+            final_text = call_deepseek_api(deepseek_input, history)
+
+        # Kirim hasil analisis
         try:
-            await update.message.reply_text(formatted_response, parse_mode="HTML")
+            await query.message.reply_text(final_text, parse_mode="HTML")
         except Exception:
-            await update.message.reply_text(response.text)
+            await query.message.reply_text(final_text)
+
+        # Hapus data foto sementara
+        context.user_data.pop("pending_photo", None)
 
     except Exception as e:
-        logger.error(f"Error pada Gemini Vision: {e}")
-        await update.message.reply_text(f"❌ Gagal memproses gambar via Gemini: {str(e)}")
+        logger.error(f"Error pada callback handler: {e}")
+        await query.message.reply_text(f"❌ Terjadi kesalahan: {str(e)}")
 
 async def error_handler(update, context):
     logger.error(f"Error: {context.error}")
@@ -173,6 +223,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    app.add_handler(CallbackQueryHandler(handle_button_click))
     app.add_error_handler(error_handler)
 
     app.run_polling()
