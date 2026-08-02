@@ -1,6 +1,7 @@
 import os
 import requests
 import logging
+import re
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 
@@ -19,7 +20,45 @@ DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "YOUR_DEEPSEEK_API_KEY")
 DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 DEEPSEEK_MODEL = "deepseek-v4-flash"
 
-# --- System Prompt dengan Format HTML ---
+# --- Fungsi untuk Membersihkan Format ---
+def clean_markdown_to_html(text: str) -> str:
+    """
+    Mengubah format **markdown** menjadi <b>HTML</b> dan membersihkan
+    format lain agar kompatibel dengan Telegram HTML parse_mode
+    """
+    # 1. Hapus ### heading (ubah menjadi bold)
+    text = re.sub(r'^###\s+', '', text, flags=re.MULTILINE)
+    text = re.sub(r'^##\s+', '', text, flags=re.MULTILINE)
+    text = re.sub(r'^#\s+', '', text, flags=re.MULTILINE)
+    
+    # 2. Ubah **teks** menjadi <b>teks</b> (BOLD)
+    def replace_bold(match):
+        return f"<b>{match.group(1)}</b>"
+    text = re.sub(r'\*\*(.+?)\*\*', replace_bold, text)
+    
+    # 3. Ubah *teks* menjadi <i>teks</i> (ITALIC)
+    def replace_italic(match):
+        return f"<i>{match.group(1)}</i>"
+    text = re.sub(r'\*(.+?)\*', replace_italic, text)
+    
+    # 4. Ubah `teks` menjadi <code>teks</code> (CODE)
+    def replace_code(match):
+        return f"<code>{match.group(1)}</code>"
+    text = re.sub(r'`(.+?)`', replace_code, text)
+    
+    # 5. Ubah --- menjadi garis pemisah
+    text = re.sub(r'^---+$', '───────────', text, flags=re.MULTILINE)
+    
+    # 6. Hapus karakter ** yang tersisa
+    text = text.replace('**', '')
+    
+    # 7. Hapus karakter * yang tersisa (tapi hati-hati jangan hapus emoji)
+    text = re.sub(r'\*\s+', '• ', text)
+    text = re.sub(r'\* ', '• ', text)
+    
+    return text
+
+# --- System Prompt ---
 SYSTEM_PROMPT = """Anda adalah asisten AI profesional di bidang keuangan yang bernama Zeuscious AI.
 
 PERSONALITY & PERILAKU:
@@ -31,11 +70,9 @@ GAYA JAWABAN:
 - Simpel, padat, dan jelas
 - Hindari jargon teknis yang rumit
 - Berikan contoh konkret jika memungkinkan
-- Gunakan format HTML untuk formatting:
-  * <b>teks</b> untuk BOLD
-  * <i>teks</i> untuk ITALIC
-  * <u>teks</u> untuk UNDERLINE
-  * Gunakan emoji yang relevan (💰📊📈💼)
+- Jawaban singkat namun informatif
+- Gunakan **bold** untuk menekankan kata kunci (akan otomatis diubah ke HTML)
+- Gunakan emoji yang relevan (💰📊📈💼)
 - Jawaban harus LENGKAP dan tidak terpotong
 
 KONTEKS KEUANGAN:
@@ -50,23 +87,18 @@ KONTEKS KEUANGAN:
 
 PENTING:
 - Selalu gunakan bahasa Indonesia dalam setiap respons
-- Gunakan tag HTML <b> untuk menekankan kata kunci
-- JANGAN gunakan **markdown** karena tidak akan terbaca
+- Gunakan **bold** untuk menekankan kata kunci
 - Jika pertanyaan di luar keuangan, tetap jawab dengan sopan
 - Berikan disclaimer jika diperlukan
 - Jawab dengan LENGKAP dan jangan terpotong"""
 
-# --- Fungsi Panggil DeepSeek API dengan max_tokens lebih besar ---
+# --- Fungsi Panggil DeepSeek API ---
 def call_deepseek_api(user_message: str, chat_history: list = None) -> str:
-    """
-    Mengirim pesan ke DeepSeek API dan mengembalikan respons.
-    """
     headers = {
         "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
         "Content-Type": "application/json"
     }
 
-    # Siapkan pesan dengan system prompt dan riwayat chat
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
     
     if chat_history:
@@ -80,7 +112,7 @@ def call_deepseek_api(user_message: str, chat_history: list = None) -> str:
         "model": DEEPSEEK_MODEL,
         "messages": messages,
         "temperature": 0.7,
-        "max_tokens": 4096,  # 🔥 DIPERBESAR dari 2048 ke 4096
+        "max_tokens": 4096,
         "stream": False
     }
 
@@ -89,7 +121,7 @@ def call_deepseek_api(user_message: str, chat_history: list = None) -> str:
             f"{DEEPSEEK_BASE_URL}/v1/chat/completions",
             headers=headers,
             json=payload,
-            timeout=120  # 🔥 DIPERPANJANG dari 60 ke 120 detik
+            timeout=120
         )
         
         logger.info(f"DeepSeek response status: {response.status_code}")
@@ -106,12 +138,12 @@ def call_deepseek_api(user_message: str, chat_history: list = None) -> str:
             logger.error("No choices in DeepSeek response")
             return "❌ Maaf, DeepSeek tidak memberikan respons. Silakan coba lagi."
         
-        # 🔥 Ambil konten dan bersihkan dari format markdown yang tidak valid
         content = result["choices"][0]["message"]["content"]
         
-        # Hapus ** yang tidak diinginkan (fallback jika masih ada)
-        # Tapi biarkan <b> yang valid untuk HTML
-        content = content.replace("**", "")  # Hapus semua **
+        # 🔥 BERSIHKAN OUTPUT: Ubah ** ke <b>
+        content = clean_markdown_to_html(content)
+        
+        logger.info(f"Response cleaned, length: {len(content)} characters")
         
         return content
         
@@ -131,7 +163,6 @@ def call_deepseek_api(user_message: str, chat_history: list = None) -> str:
 # --- Handler Telegram ---
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handler untuk perintah /start"""
     welcome_text = """
 <b>💼 Halo! Saya Zeuscious AI - Asisten Keuangan Anda.</b>
 
@@ -150,7 +181,6 @@ Cukup tanyakan apapun tentang keuangan, dan saya akan jawab dengan simpel & jela
     await update.message.reply_text(welcome_text, parse_mode="HTML")
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handler untuk perintah /help"""
     help_text = """
 <b>📋 Perintah yang tersedia:</b>
 /start - Mulai bot
@@ -169,28 +199,22 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(help_text, parse_mode="HTML")
 
 async def clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handler untuk perintah /clear"""
     context.user_data["history"] = []
     await update.message.reply_text("🧹 Riwayat percakapan telah dihapus!")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handler untuk semua pesan teks"""
-    # Cegah bot merespon pesan yang sama dua kali
     if update.message.text in context.user_data.get("last_messages", []):
         return
     
     user_message = update.message.text
     logger.info(f"Received message: {user_message[:100]}...")
 
-    # Kirim indikator "sedang mengetik"
     await update.message.chat.send_action(action="typing")
 
-    # Ambil riwayat dari user_data
     history = context.user_data.get("history", [])
     if len(history) > 20:
         history = history[-20:]
 
-    # Panggil DeepSeek API
     try:
         response = call_deepseek_api(user_message, history)
         logger.info(f"Response length: {len(response)} characters")
@@ -198,7 +222,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Error in handle_message: {e}")
         response = f"❌ Terjadi kesalahan: {str(e)}"
 
-    # Simpan riwayat percakapan
     context.user_data["history"] = history + [
         {"role": "user", "content": user_message},
         {"role": "assistant", "content": response}
@@ -206,14 +229,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(context.user_data["history"]) > 40:
         context.user_data["history"] = context.user_data["history"][-40:]
 
-    # Simpan pesan terakhir untuk mencegah duplikasi
     if "last_messages" not in context.user_data:
         context.user_data["last_messages"] = []
     context.user_data["last_messages"].append(update.message.text)
     if len(context.user_data["last_messages"]) > 5:
         context.user_data["last_messages"] = context.user_data["last_messages"][-5:]
 
-    # 🔥 KIRIM DENGAN parse_mode="HTML"
+    # Kirim dengan parse_mode HTML
     try:
         await update.message.reply_text(response, parse_mode="HTML")
     except Exception as e:
@@ -222,15 +244,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(response)
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handler untuk error"""
     logger.error(f"Update {update} caused error {context.error}")
-    try:
-        if update and update.message:
-            await update.message.reply_text(
-                "❌ Maaf, terjadi kesalahan. Tim kami sudah diberitahu dan akan segera memperbaikinya."
-            )
-    except Exception as e:
-        logger.error(f"Error in error_handler: {e}")
 
 # --- Main ---
 
