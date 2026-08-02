@@ -13,7 +13,7 @@ DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "YOUR_DEEPSEEK_API_KEY")
 
 # Konfigurasi DeepSeek API versi terbaru
 DEEPSEEK_BASE_URL = "https://api.deepseek.com"
-DEEPSEEK_MODEL = "deepseek-v4-flash"  # atau "deepseek-v4-pro"
+DEEPSEEK_MODEL = "deepseek-v4-flash"
 
 # --- System Prompt Khusus Keuangan ---
 SYSTEM_PROMPT = """Anda adalah asisten AI profesional di bidang keuangan yang bernama Zeuscious AI.
@@ -29,6 +29,8 @@ GAYA JAWABAN:
 - Jika perlu menggunakan istilah keuangan, berikan penjelasan sederhana
 - Berikan contoh konkret jika memungkinkan
 - Jawaban singkat namun informatif (maksimal 3-4 paragraf)
+- Gunakan format **bold** untuk kata/kalimat penting
+- Gunakan emoji yang relevan (💰📊📈💼)
 
 KONTEKS KEUANGAN:
 - Investasi (saham, reksa dana, obligasi, crypto, emas, properti)
@@ -37,10 +39,12 @@ KONTEKS KEUANGAN:
 - Tabungan dan dana darurat
 - Perpajakan dasar
 - Ekonomi makro dan mikro
+- Manajemen keuangan lanjutan (penciptaan nilai, valuasi, analisis laporan keuangan)
 
 PENTING:
 - Selalu gunakan bahasa Indonesia dalam setiap respons
-- Jika pertanyaan di luar keuangan, tetap jawab dengan sopan tapi arahkan ke topik keuangan
+- Gunakan **bold** untuk menekankan kata kunci
+- Jika pertanyaan di luar keuangan, tetap jawab dengan sopan
 - Berikan disclaimer jika diperlukan (misal: "ini bukan saran finansial profesional")"""
 
 # --- Fungsi Panggil DeepSeek API ---
@@ -95,10 +99,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "💰 Investasi (saham, reksa dana, crypto, emas)\n"
         "📊 Perencanaan keuangan pribadi\n"
         "🏦 Manajemen utang & tabungan\n"
-        "📈 Analisis ekonomi sederhana\n\n"
+        "📈 Analisis ekonomi sederhana\n"
+        "📚 Manajemen keuangan lanjutan\n\n"
         "Cukup tanyakan apapun tentang keuangan, dan saya akan jawab dengan simpel & jelas!\n\n"
         "📌 *Perintah:* /help untuk bantuan"
     )
+    # PASTIKAN parse_mode="Markdown" 
     await update.message.reply_text(welcome_text, parse_mode="Markdown")
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -112,14 +118,17 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "- Bagaimana cara mulai investasi saham?\n"
         "- Apa itu reksa dana?\n"
         "- Bagaimana mengatur keuangan gaji 5 juta?\n"
-        "- Apakah crypto aman untuk investasi?\n\n"
+        "- Apa itu penciptaan nilai dalam manajemen keuangan?\n"
+        "- Bagaimana valuasi perusahaan?\n\n"
         "*⚠️ Disclaimer:* Ini bukan saran finansial profesional."
     )
+    # PASTIKAN parse_mode="Markdown"
     await update.message.reply_text(help_text, parse_mode="Markdown")
 
 async def clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler untuk perintah /clear"""
     context.user_data["history"] = []
+    # Tidak perlu parse_mode untuk pesan simpel
     await update.message.reply_text("🧹 Riwayat percakapan telah dihapus!")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -159,8 +168,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(context.user_data["last_messages"]) > 5:
         context.user_data["last_messages"] = context.user_data["last_messages"][-5:]
 
-    # Kirim respons
-    await update.message.reply_text(response)
+    # PASTIKAN parse_mode="Markdown" untuk respons dari DeepSeek
+    await update.message.reply_text(response, parse_mode="Markdown")
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler untuk error"""
