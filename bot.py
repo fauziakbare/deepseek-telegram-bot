@@ -6,6 +6,7 @@ import io
 import html
 from datetime import datetime
 from PIL import Image
+from bs4 import BeautifulSoup
 from google import genai
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -48,7 +49,7 @@ def markdown_ke_html(text):
     
     return text
 
-# --- HELPER: DETEKSI & EKSTRAKSI WEB VIA JINA READER ---
+# --- HELPER: DETEKSI & EKSTRAKSI WEB (MULTI-LEVEL FALLBACK) ---
 def extract_url(text):
     """Mencari URL http/https di dalam pesan user"""
     url_pattern = r'https?://[^\s]+'
@@ -56,23 +57,53 @@ def extract_url(text):
     return match.group(0) if match else None
 
 def fetch_web_content(target_url):
-    """Mengambil teks bersih dari web menggunakan Jina Reader API"""
+    """
+    Ekstraksi web 2-tingkat:
+    1. Direct Browser Request + BeautifulSoup (Penyamaran Chrome untuk lolos CloudFront 403)
+    2. Jina Reader API (Fallback)
+    """
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "Accept-Language": "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Referer": "https://www.google.com/"
+    }
+
+    # --- METODE 1: DIRECT BROWSER SCRAPING (Lolos Proteksi CloudFront/Kontan/Detik) ---
+    try:
+        resp = requests.get(target_url, headers=headers, timeout=12)
+        if resp.status_code == 200:
+            soup = BeautifulSoup(resp.text, 'html.parser')
+            
+            # Buang elemen sampah HTML
+            for element in soup(["script", "style", "nav", "footer", "header", "aside", "form", "iframe"]):
+                element.decompose()
+            
+            # Ekstrak paragraf teks berita utama
+            paragraphs = [p.get_text().strip() for p in soup.find_all('p') if len(p.get_text().strip()) > 25]
+            extracted_text = "\n\n".join(paragraphs)
+            
+            if len(extracted_text) > 150:
+                logger.info(f"Berhasil fetch direct via BeautifulSoup: {target_url}")
+                return extracted_text[:8000]
+    except Exception as e:
+        logger.warning(f"Direct fetch gagal untuk {target_url}: {e}. Mencoba fallback Jina...")
+
+    # --- METODE 2: FALLBACK KE JINA READER ---
     try:
         jina_url = f"https://r.jina.ai/{target_url}"
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-            "X-No-Cache": "true"  # Bypass cache Jina agar artikel berita terbaca utuh
+        jina_headers = {
+            "User-Agent": headers["User-Agent"],
+            "X-No-Cache": "true"
         }
-        
-        response = requests.get(jina_url, headers=headers, timeout=15)
-        response.raise_for_status()
-        
-        # Batasi output maks 8000 karakter agar artikel lengkap terbaca
-        clean_text = response.text[:8000]
-        return clean_text
+        resp = requests.get(jina_url, headers=jina_headers, timeout=12)
+        if resp.status_code == 200 and "403 Forbidden" not in resp.text:
+            logger.info(f"Berhasil fetch via Jina Reader: {target_url}")
+            return resp.text[:8000]
     except Exception as e:
-        logger.error(f"Error fetching web ({target_url}): {e}")
-        return None
+        logger.error(f"Jina Reader fetch gagal untuk {target_url}: {e}")
+
+    return None
 
 # --- SYSTEM PROMPT & DYNAMIC TIME INJECTION ---
 SYSTEM_PROMPT = """Kamu adalah Zeuscious AI, rekan diskusi yang kritis, analitis, dan objektif. Tugasmu adalah mengevaluasi data, strategi bisnis, berita web, dan finansial secara rasional. Jangan asal mengiyakan asumsi pengguna, tapi juga jangan skeptis secara berlebihan tanpa dasar.
@@ -101,12 +132,12 @@ GAYA BAHASA & SIKAP:
 """
 
 def get_dynamic_system_prompt():
-    """Menyuntikkan tanggal real-time sistem ke System Prompt"""
-    waktu_sekarang = datetime.now().strftime("%A, %d %B %Y")
+    """Menyuntikkan tanggal dan jam real-time presisi ke System Prompt"""
+    waktu_sekarang = datetime.now().strftime("%A, %d %B %Y - %H:%M:%S WIB")
     return f"""{SYSTEM_PROMPT}
 
 INFORMASI WAKTU REAL-TIME:
-Hari ini adalah {waktu_sekarang}. Semua berita, laporan keuangan, atau data yang diterbitkan pada atau sebelum tanggal ini adalah VALID dan nyata (bukan masa depan/sintetis).
+Saat ini adalah {waktu_sekarang}. Semua berita, laporan keuangan, data pasar, atau artikel yang diterbitkan pada atau sebelum waktu ini adalah VALID dan nyata.
 """
 
 # --- DEEPSEEK API CALL ---
@@ -116,7 +147,6 @@ def call_deepseek_api(user_message, chat_history=None):
         "Content-Type": "application/json"
     }
 
-    # Gunakan System Prompt yang sudah disuntikkan tanggal real-time
     messages = [{"role": "system", "content": get_dynamic_system_prompt()}]
     if chat_history:
         messages.extend(chat_history)
@@ -179,7 +209,7 @@ async def handle_message(update, context):
                 f"[INSTRUKSI/PERTANYAAN USER]: {user_message}"
             )
         else:
-            await update.message.reply_text("❌ Gagal membaca isi link tersebut (web diblokir atau offline).")
+            await update.message.reply_text("❌ Gagal membaca isi link tersebut (web memblokir bot/akses terbatas).")
             return
     else:
         prompt_input = user_message
