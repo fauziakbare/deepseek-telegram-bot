@@ -47,14 +47,40 @@ def markdown_ke_html(text):
     
     return text
 
+# --- HELPER: DETEKSI & EKSTRAKSI WEB VIA JINA READER ---
+def extract_url(text):
+    """Mencari URL http/https di dalam pesan user"""
+    url_pattern = r'https?://[^\s]+'
+    match = re.search(url_pattern, text)
+    return match.group(0) if match else None
+
+def fetch_web_content(target_url):
+    """Mengambil teks bersih dari web menggunakan Jina Reader API"""
+    try:
+        jina_url = f"https://r.jina.ai/{target_url}"
+        headers = {
+            "User-Agent": "Mozilla/5.0",
+            "X-Target-Selector": "body"
+        }
+        
+        response = requests.get(jina_url, headers=headers, timeout=15)
+        response.raise_for_status()
+        
+        # Batasi output maks 6000 karakter agar hemat input token
+        clean_text = response.text[:6000]
+        return clean_text
+    except Exception as e:
+        logger.error(f"Error fetching web ({target_url}): {e}")
+        return None
+
 # --- SYSTEM PROMPT (ADAPTIVE VERBOSITY & BALANCED SKEPTICISM) ---
-SYSTEM_PROMPT = """Kamu adalah Zeuscious AI, rekan diskusi yang kritis, analitis, dan objektif. Tugasmu adalah mengevaluasi data, strategi bisnis, dan finansial secara rasional. Jangan asal mengiyakan asumsi pengguna, tapi juga jangan skeptis secara berlebihan tanpa dasar.
+SYSTEM_PROMPT = """Kamu adalah Zeuscious AI, rekan diskusi yang kritis, analitis, dan objektif. Tugasmu adalah mengevaluasi data, strategi bisnis, berita web, dan finansial secara rasional. Jangan asal mengiyakan asumsi pengguna, tapi juga jangan skeptis secara berlebihan tanpa dasar.
 
 ADAPTIVE VERBOSITY (EFISIENSI TOKEN):
 1. MODE RINGKAS (Pertanyaan Faktual / Data Singkat):
    - Jika pengguna bertanya fakta, angka spesifik, atau definisi (contoh: "Berapa PER BBRI?", "Apa itu EBITDA?"): Langsung jawab ke intinya dalam 1-2 kalimat murni tanpa poin berbelit.
-2. MODE ANALISIS (Bedah Kasus / Evaluasi / Foto / Pertanyaan Kompleks):
-   - Gunakan struktur analisis mendalam jika pengguna meminta penjelasan, bedah laporan keuangan, atau mengirim gambar.
+2. MODE ANALISIS (Bedah Kasus / Evaluasi / Foto / Link Web / Pertanyaan Kompleks):
+   - Gunakan struktur analisis mendalam jika pengguna meminta penjelasan, bedah laporan keuangan, kirim link web, atau mengirim gambar.
 
 STRUKTUR & FORMATTING (SAAT MENGGUNAKAN POIN):
 1. Tanpa Basa-Basi: DILARANG menggunakan kata pembuka/penutup seperti "Halo", "Berikut analisisnya", atau "Semoga membantu". Kalimat pertama langsung vonis/kesimpulan utama.
@@ -117,23 +143,42 @@ def call_deepseek_api(user_message, chat_history=None):
 async def start(update, context):
     await update.message.reply_text(
         "Gue Zeuscious AI.\n"
-        "Kirim pertanyaan atau dokumen/gambar buat langsung dibedah.",
+        "Kirim pertanyaan, link web, atau foto/dokumen buat langsung dibedah.",
         parse_mode="HTML"
     )
 
 async def handle_message(update, context):
-    """Handle chat teks murni via DeepSeek"""
-    if update.message.text in context.user_data.get("last_messages", []):
+    """Handle chat teks murni, link web, via DeepSeek"""
+    user_message = update.message.text
+    if user_message in context.user_data.get("last_messages", []):
         return
     
-    user_message = update.message.text
     await update.message.chat.send_action(action="typing")
 
+    # 1. Cek Apakah Ada Link URL di Pesan User
+    detected_url = extract_url(user_message)
+    if detected_url:
+        await update.message.reply_text("🌐 Membaca dan mengekstrak isi web...")
+        web_text = fetch_web_content(detected_url)
+        
+        if web_text:
+            prompt_input = (
+                f"[KONTEN WEB DARI LINK {detected_url}]:\n"
+                f"{web_text}\n\n"
+                f"[INSTRUKSI/PERTANYAAN USER]: {user_message}"
+            )
+        else:
+            await update.message.reply_text("❌ Gagal membaca isi link tersebut (web diblokir atau offline).")
+            return
+    else:
+        prompt_input = user_message
+
+    # 2. Kirim ke DeepSeek
     history = context.user_data.get("history", [])
     if len(history) > 6:
         history = history[-6:]
 
-    response = call_deepseek_api(user_message, history)
+    response = call_deepseek_api(prompt_input, history)
 
     context.user_data["history"] = history + [
         {"role": "user", "content": user_message},
