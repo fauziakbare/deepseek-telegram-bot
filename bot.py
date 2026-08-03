@@ -53,7 +53,7 @@ def markdown_ke_html(text):
     
     return text
 
-# --- HELPER: EXA SEARCH (EKSPLISIT /news SAJA) ---
+# --- HELPER: EXA SEARCH ---
 def fetch_exa_news(query):
     """Mencari 3 artikel berita teratas via Exa Neural Search"""
     if not exa_client:
@@ -78,7 +78,7 @@ def fetch_exa_news(query):
         logger.error(f"Error pada Exa Search ({query}): {e}")
         return None
 
-# --- HELPER: DETEKSI & EKSTRAKSI WEB (MULTI-LEVEL FALLBACK) ---
+# --- HELPER: DETEKSI & EKSTRAKSI WEB ---
 def extract_url(text):
     """Mencari URL http/https di dalam pesan user"""
     url_pattern = r'https?://[^\s]+'
@@ -210,8 +210,47 @@ async def start(update, context):
         parse_mode="HTML"
     )
 
+async def news_command(update, context):
+    """Handler khusus untuk command /news"""
+    query = " ".join(context.args).strip() if context.args else ""
+    if not query:
+        await update.message.reply_text("⚠️ Harap masukkan topik berita. Contoh: <code>/news PTRO</code>", parse_mode="HTML")
+        return
+
+    await update.message.chat.send_action(action="typing")
+    await update.message.reply_text("🔎 Mencari berita & sentimen real-time via Exa...")
+
+    exa_results = fetch_exa_news(query)
+    if exa_results:
+        prompt_input = (
+            f"[BERITA TERKINI DARI EXA SEARCH UNTUK: '{query}']:\n"
+            f"{exa_results}\n\n"
+            f"[INSTRUKSI USER]: Analisis dan rangkum poin penting dari berita di atas terkait kueri user: '{query}'"
+        )
+    else:
+        await update.message.reply_text("⚠️ Gagal mengambil berita dari Exa atau kuota API habis.")
+        prompt_input = f"Analisis berita terkait {query}"
+
+    history = context.user_data.get("history", [])
+    if len(history) > 6:
+        history = history[-6:]
+
+    response = call_deepseek_api(prompt_input, history)
+
+    context.user_data["history"] = history + [
+        {"role": "user", "content": f"/news {query}"},
+        {"role": "assistant", "content": response}
+    ]
+    if len(context.user_data["history"]) > 6:
+        context.user_data["history"] = context.user_data["history"][-6:]
+
+    try:
+        await update.message.reply_text(response, parse_mode="HTML")
+    except Exception:
+        await update.message.reply_text(response)
+
 async def handle_message(update, context):
-    """Handle chat teks, URL web, dan Exa Neural Search"""
+    """Handle chat teks murni & URL web via DeepSeek"""
     user_message = update.message.text
     if user_message in context.user_data.get("last_messages", []):
         return
@@ -219,7 +258,6 @@ async def handle_message(update, context):
     await update.message.chat.send_action(action="typing")
 
     detected_url = extract_url(user_message)
-    is_news_cmd = user_message.startswith("/news")
 
     # 1. JALUR URL EKSPLISIT: Buka web langsung via BeautifulSoup/Jina
     if detected_url:
@@ -236,30 +274,10 @@ async def handle_message(update, context):
             await update.message.reply_text("❌ Gagal membaca isi link tersebut (web memblokir bot).")
             return
 
-    # 2. JALUR EXA SEARCH: HANYA DARI COMMAND /news EKSPLISIT
-    elif is_news_cmd:
-        clean_query = user_message.replace("/news", "").strip()
-        if not clean_query:
-            await update.message.reply_text("⚠️ Harap masukkan topik berita. Contoh: <code>/news PTRO</code>", parse_mode="HTML")
-            return
-
-        await update.message.reply_text("🔎 Mencari berita & sentimen real-time via Exa...")
-        exa_results = fetch_exa_news(clean_query)
-        if exa_results:
-            prompt_input = (
-                f"[BERITA TERKINI DARI EXA SEARCH UNTUK: '{clean_query}']:\n"
-                f"{exa_results}\n\n"
-                f"[INSTRUKSI USER]: Analisis dan rangkum poin penting dari berita di atas terkait kueri user: '{clean_query}'"
-            )
-        else:
-            await update.message.reply_text("⚠️ Gagal mengambil berita dari Exa atau kuota API habis.")
-            prompt_input = user_message
-
-    # 3. JALUR CHAT BIASA: Langsung kirim ke DeepSeek (Peringatan /news ditangani di System Prompt)
+    # 2. JALUR CHAT BIASA: Langsung kirim ke DeepSeek
     else:
         prompt_input = user_message
 
-    # Kirim Prompt Final ke DeepSeek
     history = context.user_data.get("history", [])
     if len(history) > 6:
         history = history[-6:]
@@ -376,7 +394,9 @@ def main():
     logger.info("Bot sedang berjalan...")
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
+    # PENTING: Daftarkan CommandHandler khusus untuk /news
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("news", news_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(CallbackQueryHandler(handle_button_click))
