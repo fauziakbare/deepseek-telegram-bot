@@ -33,31 +33,37 @@ gemini_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 def markdown_ke_html(text):
     if not text:
         return ""
+    # Format Bold **text** -> <b>text</b>
     text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
     text = text.replace('**', '')
+    # Bersihkan Markdown Header (# Heading)
     text = re.sub(r'^#{1,3}\s+', '', text, flags=re.MULTILINE)
     return text
 
-# --- SYSTEM PROMPT (DENGAN SIMBOL BULLET •) ---
-SYSTEM_PROMPT = """Kamu adalah seorang kritis, analitis, dan sangat skeptis. Tugasmu bukan menyenangkan pengguna, melainkan menantang asumsi, mengecek validitas data, dan menemukan celah dalam argumen. 
+# --- SYSTEM PROMPT (ADAPTIVE VERBOSITY & BALANCED SKEPTICISM) ---
+SYSTEM_PROMPT = """Kamu adalah Zeuscious AI, rekan diskusi yang kritis, analitis, dan objektif. Tugasmu adalah mengevaluasi data, strategi bisnis, dan finansial secara rasional. Jangan asal mengiyakan asumsi pengguna, tapi juga jangan skeptis secara berlebihan tanpa dasar.
 
-STRUKTUR JAWABAN (WAJIB FORMAT HIBRIDA):
-1. Kalimat Pertama (Vonis Utama): Langsung hantam dengan kesimpulan paling tajam atau kelemahan logika terbesar di baris paling atas. DILARANG menggunakan kata pembuka/basa-basi seperti "Halo", "Berikut analisisnya", atau "Berdasarkan gambar".
-2. Poin Pembuktian (Bullet Points): Gunakan simbol bullet `•` di awal setiap poin untuk membeberkan 2-4 bukti fakta, angka, rasio, atau cacat logika secara ringkas dan spesifik.
-3. Kalimat Penutup (Tantangan): Akhiri dengan 1 kalimat singkat yang menantang pemikiran pengguna atau menagih data pendukung.
+ADAPTIVE VERBOSITY (EFISIENSI TOKEN):
+1. MODE RINGKAS (Pertanyaan Faktual / Data Singkat):
+   - Jika pengguna bertanya fakta, angka spesifik, atau definisi (contoh: "Berapa PER BBRI?", "Apa itu EBITDA?"): Langsung jawab ke intinya dalam 1-2 kalimat murni tanpa poin berbelit.
+2. MODE ANALISIS (Bedah Kasus / Evaluasi / Foto / Pertanyaan Kompleks):
+   - Gunakan struktur analisis mendalam jika pengguna meminta penjelasan, bedah laporan keuangan, atau mengirim gambar.
 
-GAYA BAHASA:
-- Bahasa Indonesia santai tapi profesional, gunakan "lo" dan "gue".
-- Langsung to the point ke letak kesalahan.
-- **Bold** hanya pada keyword/angka yang penting saja (minimalisir bold).
+STRUKTUR & FORMATTING (SAAT MENGGUNAKAN POIN):
+1. Tanpa Basa-Basi: DILARANG menggunakan kata pembuka/penutup seperti "Halo", "Berikut analisisnya", atau "Semoga membantu". Kalimat pertama langsung vonis/kesimpulan utama.
+2. Spacing Poin (WAJIB): Pisahkan setiap poin bullet dengan 1 BARIS KOSONG (double newline) agar rapi di layar Telegram.
+   Contoh format:
+   • Poin pertama penjelasan atau argumen data.
 
-KONTEKS KEUANGAN & BISNIS:
-- Investasi, perencanaan keuangan, manajemen utang, tabungan.
-- Crypto, Stock, Gold, Forex, Laporan Keuangan, Chart.
+   • Poin kedua yang menyoroti risiko atau celah logika.
 
-PENTING:
-- Skeptis terhadap klaim yang tidak punya data valid.
-- Jika tidak ada data pendukung, katakan "Gue gak percaya" atau "Ini asumsi lo aja".
+   • Poin ketiga berisi rekomendasi rasional.
+3. Simbol Bullet: Gunakan simbol `•` di awal setiap poin.
+
+GAYA BAHASA & SIKAP:
+- Gunakan Bahasa Indonesia santai tapi presisi ("lo" dan "gue").
+- Skeptis Secukupnya: Jika ada asumsi pengguna yang janggal, tunjukkan letak celahnya secara rasional pakai data/logika. Jangan terlalu mengiyakan, tapi jangan pula menyerang tanpa alasan.
+- Minimalisir Bold: Gunakan **bold** HANYA pada angka, ticker, atau kata kunci paling vital.
 """
 
 # --- DEEPSEEK API CALL ---
@@ -75,8 +81,8 @@ def call_deepseek_api(user_message, chat_history=None):
     payload = {
         "model": DEEPSEEK_MODEL,
         "messages": messages,
-        "temperature": 0.7,
-        "max_tokens": 4096,
+        "temperature": 0.5,  # Dimenurunkan sedikit agar lebih konsisten & efisien
+        "max_tokens": 2048,
         "stream": False
     }
 
@@ -103,8 +109,8 @@ def call_deepseek_api(user_message, chat_history=None):
 
 async def start(update, context):
     await update.message.reply_text(
-        "Halo! Gue Zeuscious AI.\n"
-        "Kirim teks atau foto, lalu pilih mau dibedah pakai Gemini atau DeepSeek 😏",
+        "Gue Zeuscious AI.\n"
+        "Kirim pertanyaan atau dokumen/gambar buat langsung dibedah.",
         parse_mode="HTML"
     )
 
@@ -117,8 +123,8 @@ async def handle_message(update, context):
     await update.message.chat.send_action(action="typing")
 
     history = context.user_data.get("history", [])
-    if len(history) > 8:
-        history = history[-8:]
+    if len(history) > 6:
+        history = history[-6:]
 
     response = call_deepseek_api(user_message, history)
 
@@ -126,8 +132,8 @@ async def handle_message(update, context):
         {"role": "user", "content": user_message},
         {"role": "assistant", "content": response}
     ]
-    if len(context.user_data["history"]) > 8:
-        context.user_data["history"] = context.user_data["history"][-8:]
+    if len(context.user_data["history"]) > 6:
+        context.user_data["history"] = context.user_data["history"][-6:]
 
     try:
         await update.message.reply_text(response, parse_mode="HTML")
@@ -157,18 +163,18 @@ async def handle_photo(update, context):
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     await update.message.reply_text(
-        "Gambar diterima. Pilih engine untuk memproses:",
+        "Gambar diterima. Pilih engine pemroses:",
         reply_markup=reply_markup
     )
 
 async def handle_button_click(update, context):
-    """Handler saat pengguna memencet salah satu tombol"""
+    """Handler saat pengguna memencet tombol"""
     query = update.callback_query
     await query.answer()
 
     pending_photo = context.user_data.get("pending_photo")
     if not pending_photo:
-        await query.edit_message_text("❌ Data gambar sudah kadaluwarsa, silakan kirim ulang gambarnya.")
+        await query.edit_message_text("❌ Data gambar kadaluwarsa, silakan kirim ulang.")
         return
 
     await query.edit_message_text("⏳ Memproses gambar...")
@@ -181,7 +187,7 @@ async def handle_button_click(update, context):
 
         final_text = ""
 
-        # --- PILIHAN 1: DIRECT GEMINI ---
+        # --- OPTION 1: DIRECT GEMINI ---
         if query.data == "process_gemini":
             prompt = f"{SYSTEM_PROMPT}\n\nInstruksi Pengguna: {caption}"
             response = gemini_client.models.generate_content(
@@ -193,11 +199,11 @@ async def handle_button_click(update, context):
             if not raw_text.strip():
                 final_text = "❌ Gemini mengembalikan respon kosong."
             else:
-                final_text = markdown_ke_html(raw_text) + f"\n\n<i>⚡ Processed by Direct Gemini ({GEMINI_MODEL})</i>"
+                final_text = markdown_ke_html(raw_text) + f"\n\n<i>⚡ Direct Gemini ({GEMINI_MODEL})</i>"
 
-        # --- PILIHAN 2: HYBRID (GEMINI OCR -> DEEPSEEK REASONING) ---
+        # --- OPTION 2: HYBRID (GEMINI OCR -> DEEPSEEK REASONING) ---
         elif query.data == "process_hybrid":
-            ocr_prompt = "Ekstrak seluruh teks, angka, tabel, dan komponen visual penting dari gambar ini secara objektif dan detail tanpa analisis."
+            ocr_prompt = "Ekstrak seluruh teks, angka, tabel, dan komponen visual penting dari gambar ini secara objektif tanpa analisis."
             gemini_ocr = gemini_client.models.generate_content(
                 model=GEMINI_MODEL,
                 contents=[image, ocr_prompt]
@@ -205,18 +211,16 @@ async def handle_button_click(update, context):
             ocr_result = gemini_ocr.text if gemini_ocr and gemini_ocr.text else ""
 
             if not ocr_result.strip():
-                final_text = "❌ Gemini gagal membaca/mengekstrak teks dari gambar ini."
+                final_text = "❌ Gemini gagal membaca teks dari gambar ini."
             else:
-                deepseek_input = f"[DATA DARI SCAN GAMBAR]:\n{ocr_result}\n\n[INSTRUKSI/PERTANYAAN USER]: {caption}"
+                deepseek_input = f"[DATA DARI SCAN GAMBAR]:\n{ocr_result}\n\n[INSTRUKSI USER]: {caption}"
                 history = context.user_data.get("history", [])
                 deepseek_res = call_deepseek_api(deepseek_input, history)
-                final_text = deepseek_res + f"\n\n<i>🧠 Processed by DeepSeek ({DEEPSEEK_MODEL}) via Gemini OCR</i>"
+                final_text = deepseek_res + f"\n\n<i>🧠 DeepSeek ({DEEPSEEK_MODEL}) via Gemini OCR</i>"
 
-        # Validasi jika final_text tetap kosong
         if not final_text or not final_text.strip():
-            final_text = "❌ Gagal menghasilkan respon (teks kosong)."
+            final_text = "❌ Gagal menghasilkan respon."
 
-        # Kirim hasil ke Telegram
         try:
             await query.message.reply_text(final_text, parse_mode="HTML")
         except Exception:
