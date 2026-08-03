@@ -3,6 +3,7 @@ import requests
 import logging
 import re
 import io
+import html
 from PIL import Image
 from google import genai
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -29,15 +30,21 @@ GEMINI_MODEL = "gemini-3.5-flash-lite"
 
 gemini_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
-# --- PARSER MARKDOWN TO HTML ---
+# --- PARSER MARKDOWN TO HTML (SAFE ESCAPING) ---
 def markdown_ke_html(text):
     if not text:
         return ""
-    # Format Bold **text** -> <b>text</b>
+    
+    # 1. Escape karakter khusus HTML (<, >, &) DULUAN agar Telegram parser tidak crash
+    text = html.escape(text)
+    
+    # 2. Format Bold **text** -> <b>text</b>
     text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
     text = text.replace('**', '')
-    # Bersihkan Markdown Header (# Heading)
+    
+    # 3. Bersihkan Markdown Header (# Heading)
     text = re.sub(r'^#{1,3}\s+', '', text, flags=re.MULTILINE)
+    
     return text
 
 # --- SYSTEM PROMPT (ADAPTIVE VERBOSITY & BALANCED SKEPTICISM) ---
@@ -81,7 +88,7 @@ def call_deepseek_api(user_message, chat_history=None):
     payload = {
         "model": DEEPSEEK_MODEL,
         "messages": messages,
-        "temperature": 0.5,  # Dimenurunkan sedikit agar lebih konsisten & efisien
+        "temperature": 0.5,
         "max_tokens": 2048,
         "stream": False
     }
