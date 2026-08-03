@@ -5,8 +5,10 @@ import re
 import io
 import html
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from PIL import Image
 from bs4 import BeautifulSoup
+from exa_py import Exa
 from google import genai
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -25,12 +27,14 @@ logger = logging.getLogger(__name__)
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+EXA_API_KEY = os.environ.get("EXA_API_KEY")
 
 DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 DEEPSEEK_MODEL = "deepseek-v4-flash"
 GEMINI_MODEL = "gemini-3.5-flash-lite"
 
 gemini_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
+exa_client = Exa(api_key=EXA_API_KEY) if EXA_API_KEY else None
 
 # --- PARSER MARKDOWN TO HTML (SAFE ESCAPING) ---
 def markdown_ke_html(text):
@@ -49,6 +53,31 @@ def markdown_ke_html(text):
     
     return text
 
+# --- HELPER: EXA SEARCH (EKSPLISIT /news SAJA) ---
+def fetch_exa_news(query):
+    """Mencari 3 artikel berita teratas via Exa Neural Search"""
+    if not exa_client:
+        logger.warning("EXA_API_KEY belum terpasang.")
+        return None
+    try:
+        response = exa_client.search_and_contents(
+            query,
+            num_results=3,
+            text={"max_characters": 1200}
+        )
+        
+        compiled_articles = []
+        for res in response.results:
+            title = res.title or "Tanpa Judul"
+            url = res.url or ""
+            content = res.text or ""
+            compiled_articles.append(f"📰 **{title}**\nURL: {url}\n{content}")
+            
+        return "\n\n---\n\n".join(compiled_articles)
+    except Exception as e:
+        logger.error(f"Error pada Exa Search ({query}): {e}")
+        return None
+
 # --- HELPER: DETEKSI & EKSTRAKSI WEB (MULTI-LEVEL FALLBACK) ---
 def extract_url(text):
     """Mencari URL http/https di dalam pesan user"""
@@ -57,11 +86,7 @@ def extract_url(text):
     return match.group(0) if match else None
 
 def fetch_web_content(target_url):
-    """
-    Ekstraksi web 2-tingkat:
-    1. Direct Browser Request + BeautifulSoup (Penyamaran Chrome untuk lolos CloudFront 403)
-    2. Jina Reader API (Fallback)
-    """
+    """Ekstraksi web: Direct BeautifulSoup -> Fallback Jina Reader"""
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
@@ -69,17 +94,13 @@ def fetch_web_content(target_url):
         "Referer": "https://www.google.com/"
     }
 
-    # --- METODE 1: DIRECT BROWSER SCRAPING (Lolos Proteksi CloudFront/Kontan/Detik) ---
     try:
         resp = requests.get(target_url, headers=headers, timeout=12)
         if resp.status_code == 200:
             soup = BeautifulSoup(resp.text, 'html.parser')
-            
-            # Buang elemen sampah HTML
             for element in soup(["script", "style", "nav", "footer", "header", "aside", "form", "iframe"]):
                 element.decompose()
             
-            # Ekstrak paragraf teks berita utama
             paragraphs = [p.get_text().strip() for p in soup.find_all('p') if len(p.get_text().strip()) > 25]
             extracted_text = "\n\n".join(paragraphs)
             
@@ -89,13 +110,9 @@ def fetch_web_content(target_url):
     except Exception as e:
         logger.warning(f"Direct fetch gagal untuk {target_url}: {e}. Mencoba fallback Jina...")
 
-    # --- METODE 2: FALLBACK KE JINA READER ---
     try:
         jina_url = f"https://r.jina.ai/{target_url}"
-        jina_headers = {
-            "User-Agent": headers["User-Agent"],
-            "X-No-Cache": "true"
-        }
+        jina_headers = {"User-Agent": headers["User-Agent"], "X-No-Cache": "true"}
         resp = requests.get(jina_url, headers=jina_headers, timeout=12)
         if resp.status_code == 200 and "403 Forbidden" not in resp.text:
             logger.info(f"Berhasil fetch via Jina Reader: {target_url}")
@@ -111,8 +128,8 @@ SYSTEM_PROMPT = """Kamu adalah Zeuscious AI, rekan diskusi yang kritis, analitis
 ADAPTIVE VERBOSITY (EFISIENSI TOKEN):
 1. MODE RINGKAS (Pertanyaan Faktual / Data Singkat):
    - Jika pengguna bertanya fakta, angka spesifik, atau definisi (contoh: "Berapa PER BBRI?", "Apa itu EBITDA?"): Langsung jawab ke intinya dalam 1-2 kalimat murni tanpa poin berbelit.
-2. MODE ANALISIS (Bedah Kasus / Evaluasi / Foto / Link Web / Pertanyaan Kompleks):
-   - Gunakan struktur analisis mendalam jika pengguna meminta penjelasan, bedah laporan keuangan, kirim link web, atau mengirim gambar.
+2. MODE ANALISIS (Bedah Kasus / Evaluasi / Foto / Link Web / Pencarian Berita / Pertanyaan Kompleks):
+   - Gunakan struktur analisis mendalam jika pengguna meminta penjelasan, bedah laporan keuangan, kirim link web, atau hasil pencarian berita.
 
 STRUKTUR & FORMATTING (SAAT MENGGUNAKAN POIN):
 1. Tanpa Basa-Basi: DILARANG menggunakan kata pembuka/penutup seperti "Halo", "Berikut analisisnya", atau "Semoga membantu". Kalimat pertama langsung vonis/kesimpulan utama.
@@ -127,13 +144,17 @@ STRUKTUR & FORMATTING (SAAT MENGGUNAKAN POIN):
 
 GAYA BAHASA & SIKAP:
 - Gunakan Bahasa Indonesia santai tapi presisi ("lo" dan "gue").
-- Skeptis Secukupnya: Jika ada asumsi pengguna yang janggal, tunjukkan letak celahnya secara rasional pakai data/logika. Jangan terlalu mengiyakan, tapi jangan pula menyerang tanpa alasan.
+- Skeptis Secukupnya: Jika ada asumsi pengguna yang janggal, tunjukkan letak celahnya secara rasional pakai data/logika.
 - Minimalisir Bold: Gunakan **bold** HANYA pada angka, ticker, atau kata kunci paling vital.
+
+ATURAN DETEKSI KEBUTUHAN REAL-TIME BERITA:
+- Jika pertanyaan pengguna membutuhkan data/berita terkini, rumor, peristiwa hari ini, atau isu sensitif waktu TANPA adanya data lampiran dari Exa/Link Web, jawab pertanyaan berdasarkan pengetahuan internalmu sebisanya, LALU WAJIB akhiri jawabanmu di baris paling akhir dengan kalimat peringatan persis seperti ini:
+\n\n⚠️ *Pertanyaan ini mungkin membutuhkan berita/data real-time. Gunakan perintah /news <topik> untuk pencarian berita terbaru.*
 """
 
 def get_dynamic_system_prompt():
-    """Menyuntikkan tanggal dan jam real-time presisi ke System Prompt"""
-    waktu_sekarang = datetime.now().strftime("%A, %d %B %Y - %H:%M:%S WIB")
+    """Menyuntikkan tanggal dan jam real-time WIB presisi ke System Prompt"""
+    waktu_sekarang = datetime.now(ZoneInfo("Asia/Jakarta")).strftime("%A, %d %B %Y - %H:%M:%S WIB")
     return f"""{SYSTEM_PROMPT}
 
 INFORMASI WAKTU REAL-TIME:
@@ -184,20 +205,23 @@ def call_deepseek_api(user_message, chat_history=None):
 async def start(update, context):
     await update.message.reply_text(
         "Gue Zeuscious AI.\n"
-        "Kirim pertanyaan, link web, atau foto/dokumen buat langsung dibedah.",
+        "Kirim pertanyaan, link web, atau foto/dokumen buat langsung dibedah.\n"
+        "Gunakan <code>/news &lt;topik&gt;</code> untuk cari berita real-time via Exa.",
         parse_mode="HTML"
     )
 
 async def handle_message(update, context):
-    """Handle chat teks murni, link web, via DeepSeek"""
+    """Handle chat teks, URL web, dan Exa Neural Search"""
     user_message = update.message.text
     if user_message in context.user_data.get("last_messages", []):
         return
     
     await update.message.chat.send_action(action="typing")
 
-    # 1. Cek Apakah Ada Link URL di Pesan User
     detected_url = extract_url(user_message)
+    is_news_cmd = user_message.startswith("/news")
+
+    # 1. JALUR URL EKSPLISIT: Buka web langsung via BeautifulSoup/Jina
     if detected_url:
         await update.message.reply_text("🌐 Membaca dan mengekstrak isi web...")
         web_text = fetch_web_content(detected_url)
@@ -209,12 +233,33 @@ async def handle_message(update, context):
                 f"[INSTRUKSI/PERTANYAAN USER]: {user_message}"
             )
         else:
-            await update.message.reply_text("❌ Gagal membaca isi link tersebut (web memblokir bot/akses terbatas).")
+            await update.message.reply_text("❌ Gagal membaca isi link tersebut (web memblokir bot).")
             return
+
+    # 2. JALUR EXA SEARCH: HANYA DARI COMMAND /news EKSPLISIT
+    elif is_news_cmd:
+        clean_query = user_message.replace("/news", "").strip()
+        if not clean_query:
+            await update.message.reply_text("⚠️ Harap masukkan topik berita. Contoh: <code>/news PTRO</code>", parse_mode="HTML")
+            return
+
+        await update.message.reply_text("🔎 Mencari berita & sentimen real-time via Exa...")
+        exa_results = fetch_exa_news(clean_query)
+        if exa_results:
+            prompt_input = (
+                f"[BERITA TERKINI DARI EXA SEARCH UNTUK: '{clean_query}']:\n"
+                f"{exa_results}\n\n"
+                f"[INSTRUKSI USER]: Analisis dan rangkum poin penting dari berita di atas terkait kueri user: '{clean_query}'"
+            )
+        else:
+            await update.message.reply_text("⚠️ Gagal mengambil berita dari Exa atau kuota API habis.")
+            prompt_input = user_message
+
+    # 3. JALUR CHAT BIASA: Langsung kirim ke DeepSeek (Peringatan /news ditangani di System Prompt)
     else:
         prompt_input = user_message
 
-    # 2. Kirim ke DeepSeek
+    # Kirim Prompt Final ke DeepSeek
     history = context.user_data.get("history", [])
     if len(history) > 6:
         history = history[-6:]
@@ -280,7 +325,6 @@ async def handle_button_click(update, context):
 
         final_text = ""
 
-        # --- OPTION 1: DIRECT GEMINI ---
         if query.data == "process_gemini":
             prompt = f"{get_dynamic_system_prompt()}\n\nInstruksi Pengguna: {caption}"
             response = gemini_client.models.generate_content(
@@ -294,7 +338,6 @@ async def handle_button_click(update, context):
             else:
                 final_text = markdown_ke_html(raw_text) + f"\n\n<i>⚡ Direct Gemini ({GEMINI_MODEL})</i>"
 
-        # --- OPTION 2: HYBRID (GEMINI OCR -> DEEPSEEK REASONING) ---
         elif query.data == "process_hybrid":
             ocr_prompt = "Ekstrak seluruh teks, angka, tabel, dan komponen visual penting dari gambar ini secara objektif tanpa analisis."
             gemini_ocr = gemini_client.models.generate_content(
