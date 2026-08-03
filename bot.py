@@ -4,6 +4,7 @@ import logging
 import re
 import io
 import html
+from datetime import datetime
 from PIL import Image
 from google import genai
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -59,21 +60,21 @@ def fetch_web_content(target_url):
     try:
         jina_url = f"https://r.jina.ai/{target_url}"
         headers = {
-            "User-Agent": "Mozilla/5.0",
-            "X-Target-Selector": "body"
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+            "X-No-Cache": "true"  # Bypass cache Jina agar artikel berita terbaca utuh
         }
         
         response = requests.get(jina_url, headers=headers, timeout=15)
         response.raise_for_status()
         
-        # Batasi output maks 6000 karakter agar hemat input token
-        clean_text = response.text[:6000]
+        # Batasi output maks 8000 karakter agar artikel lengkap terbaca
+        clean_text = response.text[:8000]
         return clean_text
     except Exception as e:
         logger.error(f"Error fetching web ({target_url}): {e}")
         return None
 
-# --- SYSTEM PROMPT (ADAPTIVE VERBOSITY & BALANCED SKEPTICISM) ---
+# --- SYSTEM PROMPT & DYNAMIC TIME INJECTION ---
 SYSTEM_PROMPT = """Kamu adalah Zeuscious AI, rekan diskusi yang kritis, analitis, dan objektif. Tugasmu adalah mengevaluasi data, strategi bisnis, berita web, dan finansial secara rasional. Jangan asal mengiyakan asumsi pengguna, tapi juga jangan skeptis secara berlebihan tanpa dasar.
 
 ADAPTIVE VERBOSITY (EFISIENSI TOKEN):
@@ -99,6 +100,15 @@ GAYA BAHASA & SIKAP:
 - Minimalisir Bold: Gunakan **bold** HANYA pada angka, ticker, atau kata kunci paling vital.
 """
 
+def get_dynamic_system_prompt():
+    """Menyuntikkan tanggal real-time sistem ke System Prompt"""
+    waktu_sekarang = datetime.now().strftime("%A, %d %B %Y")
+    return f"""{SYSTEM_PROMPT}
+
+INFORMASI WAKTU REAL-TIME:
+Hari ini adalah {waktu_sekarang}. Semua berita, laporan keuangan, atau data yang diterbitkan pada atau sebelum tanggal ini adalah VALID dan nyata (bukan masa depan/sintetis).
+"""
+
 # --- DEEPSEEK API CALL ---
 def call_deepseek_api(user_message, chat_history=None):
     headers = {
@@ -106,7 +116,8 @@ def call_deepseek_api(user_message, chat_history=None):
         "Content-Type": "application/json"
     }
 
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    # Gunakan System Prompt yang sudah disuntikkan tanggal real-time
+    messages = [{"role": "system", "content": get_dynamic_system_prompt()}]
     if chat_history:
         messages.extend(chat_history)
     messages.append({"role": "user", "content": user_message})
@@ -241,7 +252,7 @@ async def handle_button_click(update, context):
 
         # --- OPTION 1: DIRECT GEMINI ---
         if query.data == "process_gemini":
-            prompt = f"{SYSTEM_PROMPT}\n\nInstruksi Pengguna: {caption}"
+            prompt = f"{get_dynamic_system_prompt()}\n\nInstruksi Pengguna: {caption}"
             response = gemini_client.models.generate_content(
                 model=GEMINI_MODEL,
                 contents=[image, prompt]
